@@ -44,26 +44,18 @@ class FieldSolverADICUDA : public FieldSolver{
   CudaDeviceBuffer<double> d_pcr_b_re, d_pcr_b_im;
 
   // Per-slice ADI RHS arrays.  Size = nslice * ngrid * ngrid.
-  // These are device-only buffers; source terms are scattered into them before
-  // each ADI half-step to avoid holding a second full-grid source array.
   CudaDeviceBuffer<double> d_r_re, d_r_im;
+
+  // Source grid arrays.  Size = nslice * ngrid * ngrid.  Particle source is
+  // deposited once per advance and reused by both ADI half-steps.
+  CudaDeviceBuffer<double> d_source_re, d_source_im;
 
   // Source current and scale per beam slice.
   CudaDeviceBuffer<double> d_current;
   CudaDeviceBuffer<double> d_slice_scl;
 
-  // Sort/reduce source construction scratch.  This is solver-owned to avoid
-  // cross-field aliasing from function-local static device buffers.
-  CudaDeviceBuffer<int> d_contrib_key;
-  CudaDeviceBuffer<int> d_reduce_key;
-  CudaDeviceBuffer<double> d_contrib_re;
-  CudaDeviceBuffer<double> d_contrib_im;
-  CudaDeviceBuffer<double> d_reduce_re;
-  CudaDeviceBuffer<double> d_reduce_im;
-
   int d_alloc_nslice {0};
   int d_alloc_cells_per_slice {0};
-  int d_source_contrib_capacity {0};
   int d_pcr_factor_ngrid {0};
   int d_pcr_num_stages {0};
 };

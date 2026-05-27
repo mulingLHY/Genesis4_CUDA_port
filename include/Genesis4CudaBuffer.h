@@ -72,6 +72,23 @@ class CudaDeviceBuffer {
     capacity_ = n;
   }
 
+  void resize_discard(std::size_t n)
+  {
+    if (n <= capacity_) {
+      size_ = n;
+      return;
+    }
+
+    clear();
+    if (n > 0) {
+      void* raw_ptr = nullptr;
+      check(cudaMalloc(&raw_ptr, n * sizeof(T)), "cudaMalloc CudaDeviceBuffer");
+      ptr_ = static_cast<T*>(raw_ptr);
+    }
+    size_ = n;
+    capacity_ = n;
+  }
+
   void clear()
   {
     if (ptr_ != nullptr) {

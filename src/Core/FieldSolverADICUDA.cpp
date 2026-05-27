@@ -11,14 +11,6 @@
 #include "Genesis4BeamSoA.h"
 #include "Genesis4FieldSoA.h"
 #include <cuda_runtime.h>
-#include <thrust/device_ptr.h>
-#include <thrust/execution_policy.h>
-#include <thrust/functional.h>
-#include <thrust/iterator/zip_iterator.h>
-#include <thrust/sort.h>
-#include <thrust/system/cuda/execution_policy.h>
-#include <thrust/tuple.h>
-#include <thrust/reduce.h>
 
 
 #ifndef GENESIS_FIELD_ADI_PCR_MAX_NGRID
@@ -82,16 +74,6 @@ struct SourceParticleView {
   const int* slice_id;
 };
 
-struct SourceWorkspace {
-  CudaDeviceBuffer<int>& contrib_key;
-  CudaDeviceBuffer<int>& reduce_key;
-  CudaDeviceBuffer<double>& contrib_re;
-  CudaDeviceBuffer<double>& contrib_im;
-  CudaDeviceBuffer<double>& reduce_re;
-  CudaDeviceBuffer<double>& reduce_im;
-  int& capacity;
-};
-
 GENESIS4_CUDA_HOST_DEVICE GENESIS4_CUDA_FORCE_INLINE
 G4ComplexPair g4_make_complex(double re, double im) noexcept
 {
@@ -144,17 +126,6 @@ G4ComplexPair g4_mul_i_scale(G4ComplexPair a, double s) noexcept
   return {-s * a.im, s * a.re};
 }
 
-struct G4ZipComplexAdd {
-  template <typename Tuple>
-  GENESIS4_CUDA_HOST_DEVICE GENESIS4_CUDA_FORCE_INLINE
-  Tuple operator()(Tuple const& a, Tuple const& b) const noexcept
-  {
-    return thrust::make_tuple(thrust::get<0>(a) + thrust::get<0>(b),
-                              thrust::get<1>(a) + thrust::get<1>(b));
-  }
-};
-
-
 void adi_compute_slice_scl(int nslice,
                            const int* slice_offsets,
                            const double* current,
@@ -178,32 +149,28 @@ void adi_compute_slice_scl(int nslice,
     });
 }
 
-void adi_build_source_contribs(int total_particles,
-                               SourceParams params,
-                               SourceParticleView particles,
-                               const double* slice_scl,
-                               int* contrib_key,
-                               double* contrib_re,
-                               double* contrib_im)
+void adi_zero_source_grid(int total_cells,
+                          double* source_re,
+                          double* source_im)
+{
+  g4_parallel_for(total_cells,
+    [=] GENESIS4_CUDA_DEVICE (int g) noexcept {
+      source_re[g] = 0.0;
+      source_im[g] = 0.0;
+    });
+}
+
+void adi_deposit_source_grid(int total_particles,
+                             SourceParams params,
+                             SourceParticleView particles,
+                             const double* slice_scl,
+                             double* source_re,
+                             double* source_im)
 {
   const int plane = params.ngrid * params.ngrid;
 
   g4_parallel_for(total_particles,
     [=] GENESIS4_CUDA_DEVICE (int ip) noexcept {
-      const int out0 = 4 * ip;
-      contrib_key[out0 + 0] = -1;
-      contrib_key[out0 + 1] = -1;
-      contrib_key[out0 + 2] = -1;
-      contrib_key[out0 + 3] = -1;
-      contrib_re[out0 + 0] = 0.0;
-      contrib_re[out0 + 1] = 0.0;
-      contrib_re[out0 + 2] = 0.0;
-      contrib_re[out0 + 3] = 0.0;
-      contrib_im[out0 + 0] = 0.0;
-      contrib_im[out0 + 1] = 0.0;
-      contrib_im[out0 + 2] = 0.0;
-      contrib_im[out0 + 3] = 0.0;
-
       const int beam_slice = particles.slice_id[ip];
       if (beam_slice < 0 || beam_slice >= params.nslice) { return; }
 
@@ -246,100 +213,25 @@ void adi_build_source_contribs(int total_particles,
       const double w01 = wx * (1.0 - wy);
       const double w11 = (1.0 - wx) * (1.0 - wy);
 
-      contrib_key[out0 + 0] = base;
-      contrib_re [out0 + 0] = cpart_re * w00;
-      contrib_im [out0 + 0] = cpart_im * w00;
+      g4_cuda_atomic_add_double(&source_re[base], cpart_re * w00);
+      g4_cuda_atomic_add_double(&source_im[base], cpart_im * w00);
 
-      contrib_key[out0 + 1] = base + 1;
-      contrib_re [out0 + 1] = cpart_re * w10;
-      contrib_im [out0 + 1] = cpart_im * w10;
+      g4_cuda_atomic_add_double(&source_re[base + 1], cpart_re * w10);
+      g4_cuda_atomic_add_double(&source_im[base + 1], cpart_im * w10);
 
-      contrib_key[out0 + 2] = base + params.ngrid;
-      contrib_re [out0 + 2] = cpart_re * w01;
-      contrib_im [out0 + 2] = cpart_im * w01;
+      g4_cuda_atomic_add_double(&source_re[base + params.ngrid], cpart_re * w01);
+      g4_cuda_atomic_add_double(&source_im[base + params.ngrid], cpart_im * w01);
 
-      contrib_key[out0 + 3] = base + params.ngrid + 1;
-      contrib_re [out0 + 3] = cpart_re * w11;
-      contrib_im [out0 + 3] = cpart_im * w11;
+      g4_cuda_atomic_add_double(&source_re[base + params.ngrid + 1], cpart_re * w11);
+      g4_cuda_atomic_add_double(&source_im[base + params.ngrid + 1], cpart_im * w11);
     });
-}
-
-void adi_add_reduced_source(int n_unique,
-                            const SourceWorkspace& workspace,
-                            AdiFieldView field)
-{
-  const int* reduced_key = workspace.reduce_key.data();
-  const double* reduced_re = workspace.reduce_re.data();
-  const double* reduced_im = workspace.reduce_im.data();
-  double* rhs_re = field.r_re;
-  double* rhs_im = field.r_im;
-
-  g4_parallel_for(n_unique,
-    [=] GENESIS4_CUDA_DEVICE (int i) noexcept {
-      const int key = reduced_key[i];
-      if (key >= 0) {
-        rhs_re[key] += reduced_re[i];
-        rhs_im[key] += reduced_im[i];
-      }
-    });
-}
-
-int adi_build_source_sort_reduce(int total_particles,
-                                 SourceParams params,
-                                 SourceParticleView particles,
-                                 const double* slice_scl,
-                                 SourceWorkspace& workspace)
-{
-  const int ncontrib = 4 * total_particles;
-  if (ncontrib <= 0) { return 0; }
-
-  if (workspace.capacity < ncontrib) {
-    workspace.contrib_key.resize(ncontrib);
-    workspace.reduce_key.resize(ncontrib);
-    workspace.contrib_re.resize(ncontrib);
-    workspace.contrib_im.resize(ncontrib);
-    workspace.reduce_re.resize(ncontrib);
-    workspace.reduce_im.resize(ncontrib);
-    workspace.capacity = ncontrib;
-  }
-
-  adi_build_source_contribs(total_particles,
-                            params,
-                            particles,
-                            slice_scl,
-                            workspace.contrib_key.data(),
-                            workspace.contrib_re.data(),
-                            workspace.contrib_im.data());
-
-  auto policy = thrust::cuda::par.on(g4_cuda_stream());
-  auto key_first = thrust::device_pointer_cast(workspace.contrib_key.data());
-  auto key_last = key_first + ncontrib;
-  auto val_first = thrust::make_zip_iterator(
-      thrust::make_tuple(thrust::device_pointer_cast(workspace.contrib_re.data()),
-                         thrust::device_pointer_cast(workspace.contrib_im.data())));
-
-  thrust::sort_by_key(policy, key_first, key_last, val_first);
-
-  auto out_key_first = thrust::device_pointer_cast(workspace.reduce_key.data());
-  auto out_val_first = thrust::make_zip_iterator(
-      thrust::make_tuple(thrust::device_pointer_cast(workspace.reduce_re.data()),
-                         thrust::device_pointer_cast(workspace.reduce_im.data())));
-
-  auto ends = thrust::reduce_by_key(policy,
-                                    key_first,
-                                    key_last,
-                                    val_first,
-                                    out_key_first,
-                                    out_val_first,
-                                    thrust::equal_to<int>(),
-                                    G4ZipComplexAdd());
-
-  return static_cast<int>(ends.first - out_key_first);
 }
 
 void adi_build_rhs_y_laplacian(int total_cells,
                                int ngrid,
                                double cstep_im,
+                               const double* source_re,
+                               const double* source_im,
                                AdiFieldView field)
 {
   const int plane = ngrid * ngrid;
@@ -368,7 +260,11 @@ void adi_build_rhs_y_laplacian(int total_cells,
         lap = g4_sub(lap, g4_scale(center, 2.0));
       }
 
-      const G4ComplexPair rhs = g4_add(center, g4_mul_i_scale(lap, cstep_im));
+      G4ComplexPair rhs = g4_add(center, g4_mul_i_scale(lap, cstep_im));
+      if (source_re != nullptr && source_im != nullptr) {
+        rhs.re += source_re[g];
+        rhs.im += source_im[g];
+      }
       r_re[g] = rhs.re;
       r_im[g] = rhs.im;
     });
@@ -428,6 +324,8 @@ void adi_solve_x_thomas(int nslice,
 void adi_build_rhs_x_laplacian(int total_cells,
                                int ngrid,
                                double cstep_im,
+                               const double* source_re,
+                               const double* source_im,
                                AdiFieldView field)
 {
   const int plane = ngrid * ngrid;
@@ -456,7 +354,11 @@ void adi_build_rhs_x_laplacian(int total_cells,
         lap = g4_sub(lap, g4_scale(center, 2.0));
       }
 
-      const G4ComplexPair rhs = g4_add(center, g4_mul_i_scale(lap, cstep_im));
+      G4ComplexPair rhs = g4_add(center, g4_mul_i_scale(lap, cstep_im));
+      if (source_re != nullptr && source_im != nullptr) {
+        rhs.re += source_re[g];
+        rhs.im += source_im[g];
+      }
       r_re[g] = rhs.re;
       r_im[g] = rhs.im;
     });
@@ -782,10 +684,10 @@ void FieldSolverADICUDA::advance(double delz, Field *field, Beam *beam, Undulato
   }
 
   if (d_alloc_nslice != nslice || d_alloc_cells_per_slice != plane) {
-    d_r_re.resize(total_cells);
-    d_r_im.resize(total_cells);
-    d_current.resize(nslice);
-    d_slice_scl.resize(nslice);
+    d_r_re.resize_discard(total_cells);
+    d_r_im.resize_discard(total_cells);
+    d_current.resize_discard(nslice);
+    d_slice_scl.resize_discard(nslice);
     d_alloc_nslice = nslice;
     d_alloc_cells_per_slice = plane;
   }
@@ -878,38 +780,31 @@ void FieldSolverADICUDA::advance(double delz, Field *field, Beam *beam, Undulato
                                        bsoa->gamma.data(),
                                        bsoa->theta.data(),
                                        bsoa->slice_id.data()};
-  SourceWorkspace source_workspace {d_contrib_key,
-                                    d_reduce_key,
-                                    d_contrib_re,
-                                    d_contrib_im,
-                                    d_reduce_re,
-                                    d_reduce_im,
-                                    d_source_contrib_capacity};
-
-  int n_unique_source = 0;
+  const double* source_re = nullptr;
+  const double* source_im = nullptr;
   if (do_source && total_particles > 0) {
-    n_unique_source = adi_build_source_sort_reduce(total_particles,
-                                                   source_params,
-                                                   source_particles,
-                                                   d_slice_scl.data(),
-                                                   source_workspace);
+    d_source_re.resize_discard(total_cells);
+    d_source_im.resize_discard(total_cells);
+    adi_zero_source_grid(total_cells, d_source_re.data(), d_source_im.data());
+    adi_deposit_source_grid(total_particles,
+                            source_params,
+                            source_particles,
+                            d_slice_scl.data(),
+                            d_source_re.data(),
+                            d_source_im.data());
+    source_re = d_source_re.data();
+    source_im = d_source_im.data();
   }
 
   const int nlines = nslice * ngrid_i;
   const double cstep_im = cstep.imag();
 
-  adi_build_rhs_y_laplacian(total_cells, ngrid_i, cstep_im, adi_field);
-  if (n_unique_source > 0) {
-    adi_add_reduced_source(n_unique_source, source_workspace, adi_field);
-  }
+  adi_build_rhs_y_laplacian(total_cells, ngrid_i, cstep_im, source_re, source_im, adi_field);
   if (!adi_try_solve_x_pcr(nlines, ngrid_i, pcr_factors, adi_field)) {
     adi_solve_x_thomas(nslice, ngrid_i, adi_field, adi_coeff);
   }
 
-  adi_build_rhs_x_laplacian(total_cells, ngrid_i, cstep_im, adi_field);
-  if (n_unique_source > 0) {
-    adi_add_reduced_source(n_unique_source, source_workspace, adi_field);
-  }
+  adi_build_rhs_x_laplacian(total_cells, ngrid_i, cstep_im, source_re, source_im, adi_field);
   if (!adi_try_solve_y_pcr(nlines, ngrid_i, pcr_factors, adi_field)) {
     adi_solve_y_thomas(nslice, ngrid_i, adi_field, adi_coeff);
   }
