@@ -140,17 +140,17 @@ void genesis4_fieldsolverfftcuda_build_source_gpu(int total_particles,
       const double w01 = wx * (1.0 - wy);
       const double w11 = (1.0 - wx) * (1.0 - wy);
 
-      atomicAdd(&source_fft[base].x, cpart_re * w00);
-      atomicAdd(&source_fft[base].y, cpart_im * w00);
+      g4_cuda_atomic_add_double(&source_fft[base].x, cpart_re * w00);
+      g4_cuda_atomic_add_double(&source_fft[base].y, cpart_im * w00);
 
-      atomicAdd(&source_fft[base + 1].x, cpart_re * w10);
-      atomicAdd(&source_fft[base + 1].y, cpart_im * w10);
+      g4_cuda_atomic_add_double(&source_fft[base + 1].x, cpart_re * w10);
+      g4_cuda_atomic_add_double(&source_fft[base + 1].y, cpart_im * w10);
 
-      atomicAdd(&source_fft[base + ngrid].x, cpart_re * w01);
-      atomicAdd(&source_fft[base + ngrid].y, cpart_im * w01);
+      g4_cuda_atomic_add_double(&source_fft[base + ngrid].x, cpart_re * w01);
+      g4_cuda_atomic_add_double(&source_fft[base + ngrid].y, cpart_im * w01);
 
-      atomicAdd(&source_fft[base + ngrid + 1].x, cpart_re * w11);
-      atomicAdd(&source_fft[base + ngrid + 1].y, cpart_im * w11);
+      g4_cuda_atomic_add_double(&source_fft[base + ngrid + 1].x, cpart_re * w11);
+      g4_cuda_atomic_add_double(&source_fft[base + ngrid + 1].y, cpart_im * w11);
     });
 }
 
