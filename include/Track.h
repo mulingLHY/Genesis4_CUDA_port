@@ -1,0 +1,35 @@
+#ifndef __GENESIS_TRACK__
+#define __GENESIS_TRACK__
+
+#include <iostream>
+#include <map>
+#include <string>
+#include <vector>
+
+#include "Setup.h"
+#include "Lattice.h"
+#include "AlterLattice.h"
+#include "GenTime.h"
+#include "Beam.h"
+#include "Field.h"
+#include "Diagnostic.h"
+#include "StringProcessing.h"
+
+using namespace std;
+
+class Track: public StringProcessing{
+ public:
+   Track();
+   virtual ~Track();
+   bool init(int, int, map<string,string> *, Beam *, vector<Field *> *, Setup *, Lattice *, AlterLattice *, Time *, FilterDiagnostics &);
+
+ private:
+   void usage();
+   double zstop,slen,s0;
+   double xc,yc,sig;
+   int output_step,dumpFieldStep,dumpBeamStep,sort_step,bunchharm;
+   int rank, size;
+   bool exclharm,fftsolver,doFilter,periodic,use_cuda;
+};
+
+#endif

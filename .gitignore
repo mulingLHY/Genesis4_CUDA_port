@@ -1,0 +1,15 @@
+CLAUDE.md
+.claude
+
+.vscode
+
+backup*
+
+build/
+
+AMReX/
+
+Genesis-1.3-Version4/
+
+**.log
+**.out.h5
