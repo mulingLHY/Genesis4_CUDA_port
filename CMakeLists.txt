@@ -24,7 +24,7 @@ option(G4_RENAME_OVERLAPPED_HEADERS "Rename upstream Genesis4 headers shadowed b
 
 
 set(G4_UPSTREAM_REPOSITORY "https://github.com/svenreiche/Genesis-1.3-Version4.git" CACHE STRING "Upstream Genesis4 git repository")
-set(G4_UPSTREAM_GIT_REF "6d530ac" CACHE STRING "Genesis4 branch/tag/commit hash to clone")
+set(G4_UPSTREAM_GIT_REF "v4.6.14" CACHE STRING "Genesis4 branch/tag to clone")
 set(G4_UPSTREAM_SOURCE_DIR "${CMAKE_SOURCE_DIR}/Genesis-1.3-Version4" CACHE PATH "Upstream Genesis4 source directory")
 
 find_package(Git QUIET)
@@ -54,35 +54,11 @@ function(git_clone_if_missing name repo ref dst required_file)
     get_filename_component(_dst_parent "${dst}" DIRECTORY)
     file(MAKE_DIRECTORY "${_dst_parent}")
 
-    # set(_clone_cmd "${GIT_EXECUTABLE}" clone --depth 1)
-    # if (NOT "${ref}" STREQUAL "")
-    #     list(APPEND _clone_cmd --branch "${ref}")
-    # endif()
-    # list(APPEND _clone_cmd "${repo}" "${dst}")
-
-    # message(STATUS "${name}: cloning ${repo} into ${dst}")
-    # execute_process(
-    #     COMMAND ${_clone_cmd}
-    #     RESULT_VARIABLE _clone_result
-    #     OUTPUT_VARIABLE _clone_output
-    #     ERROR_VARIABLE _clone_error
-    # )
-
-    # if (NOT _clone_result EQUAL 0)
-    #     message(FATAL_ERROR
-    #         "${name}: git clone failed with exit code ${_clone_result}\n"
-    #         "Command: ${_clone_cmd}\n"
-    #         "Output: ${_clone_output}\n"
-    #         "Error: ${_clone_error}")
-    # endif()
-    set(_clone_cmd "${GIT_EXECUTABLE}" clone)
-
-    if ("${ref}" STREQUAL "")
-        list(APPEND _clone_cmd --depth 1 "${repo}" "${dst}")
-    else()
-        # Do not use --branch here, because ref may be a commit SHA.
-        list(APPEND _clone_cmd "${repo}" "${dst}")
+    set(_clone_cmd "${GIT_EXECUTABLE}" clone --depth 1)
+    if (NOT "${ref}" STREQUAL "")
+        list(APPEND _clone_cmd --branch "${ref}")
     endif()
+    list(APPEND _clone_cmd "${repo}" "${dst}")
 
     message(STATUS "${name}: cloning ${repo} into ${dst}")
     execute_process(
@@ -99,23 +75,6 @@ function(git_clone_if_missing name repo ref dst required_file)
             "Output: ${_clone_output}\n"
             "Error: ${_clone_error}")
     endif()
-
-    if (NOT "${ref}" STREQUAL "")
-        execute_process(
-            COMMAND "${GIT_EXECUTABLE}" -C "${dst}" checkout "${ref}"
-            RESULT_VARIABLE _checkout_result
-            OUTPUT_VARIABLE _checkout_output
-            ERROR_VARIABLE _checkout_error
-        )
-
-        if (NOT _checkout_result EQUAL 0)
-            message(FATAL_ERROR
-                "${name}: git checkout ${ref} failed with exit code ${_checkout_result}\n"
-                "Output: ${_checkout_output}\n"
-                "Error: ${_checkout_error}")
-        endif()
-    endif()
-    ###### replace after Genesis tag v4.6.13
 
     if (NOT EXISTS "${dst}/${required_file}")
         message(FATAL_ERROR
