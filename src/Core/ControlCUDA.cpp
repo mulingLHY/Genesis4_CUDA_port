@@ -9,11 +9,15 @@
 #include <cmath>
 #include <cstddef>
 #include <iostream>
+#include <vector>
 
 #include <mpi.h>
 
 #include "Field.h"
 #include "Genesis4FieldSoA.h"
+#include "Beam.h"
+#include "Undulator.h"
+#include "Control.h"
 
 
 using namespace std;
@@ -122,6 +126,23 @@ void ControlCUDA::init(int inrank, int insize, bool inTime, bool inPeriodic, dou
   timerun_ = inTime;
   periodic_ = inPeriodic;
   sample_ = inSample;
+}
+
+bool ControlCUDA::applyMarker(Control *control, Beam *beam, vector<Field*>*field, Undulator *und, bool& error_IO)
+{
+  int marker=und->getMarker();
+
+  if ((marker & 1) != 0){
+    beam->unpack_soa_to_beam();
+  }
+  
+  if ((marker & 2) != 0){
+    for (int i = 0; i < field->size(); ++i) {
+        field->at(i)->unpack_soa_to_field();
+    }
+  }
+
+  return control->applyMarker(beam, field, und, error_IO);
 }
 
 bool ControlCUDA::applySlippage(double slippage, Field *field)

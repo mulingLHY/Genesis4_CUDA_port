@@ -7,8 +7,10 @@ UND: UNDULATOR = { lambdau=0.03, nwig=72, aw=2.613, helical= False};
 
 C: CHICANE = {l=0.10, lb=0.02, delay=342e-10};
 
+M: Marker = {dumpbeam=1, dumpfield=1};
+
 FODO_D: LINE={UND,D1,QF,DC,C,DC, UND, D1,QD,DC,C,DC};
-FEL: LINE={10*FODO_D};
+FEL: LINE={10*FODO_D, M};
 
 FODO: LINE={UND,D1,QF,D2, UND, D1,QD,D2};
 SASE: LINE={10*FODO};

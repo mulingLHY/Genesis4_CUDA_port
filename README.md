@@ -31,3 +31,7 @@ cmake --build build_cpu -j 4
 `use_cuda` controls the CUDA solver in this port, default is true:
 - `use_cuda = false`：FieldSolver, BeamSolver, TrackBeam, Control::applySlippage, Diagnostic::calc use Genesis4 upstream CPU implementation.
 - `use_cuda = true`：FieldSolver uses `FieldSolverADICUDA`/`FieldSolverFFTCUDA`, BeamSolver uses `BeamSolverCUDA`, beam transverse/R56 path uses `TrackBeamCUDA`, slippage uses `ControlCUDA`, built-in diagnostic calculations use `DiagnosticCUDA`.
+
+
+### Known issues
+1. one4one `sort` for `Marker` is not implemented.

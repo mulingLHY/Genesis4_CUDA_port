@@ -71,6 +71,12 @@ bool Gencore::run(Beam *beam, vector<Field*> *field, Setup *setup, Undulator *un
     if (use_cuda) {
         control_cuda.init(rank, size, isTime, periodic, beam->slicelength / beam->reflength);
     }
+
+    auto apply_marker = [&](Beam *beam, vector<Field*>*field, Undulator *und, bool& error_IO) {
+        if (use_cuda) { return control_cuda.applyMarker(control, beam, field, und, error_IO); }
+
+        return control->applyMarker(beam, field, und, error_IO);
+    };
 #endif
     auto apply_slippage = [&](double shift, Field *fld) {
 #ifdef GENESIS_USE_CUDA
@@ -170,7 +176,7 @@ double t_diag_calc = 0.0;
       // ----------------------------------------
       // step 1 - apply most marker action  (always at beginning of a step)
       bool error_IO=false;
-      bool sort=control->applyMarker(beam, field, und, error_IO);
+      bool sort=apply_marker(beam, field, und, error_IO);
       if(error_IO) {
         return(false);
       }
