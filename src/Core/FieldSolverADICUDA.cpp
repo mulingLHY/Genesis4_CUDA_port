@@ -11,6 +11,7 @@
 #include "Genesis4BeamSoA.h"
 #include "Genesis4FieldSoA.h"
 #include <cuda_runtime.h>
+#include <thrust/complex.h>
 
 
 #ifndef GENESIS_FIELD_ADI_PCR_MAX_NGRID
@@ -20,10 +21,7 @@
 
 namespace {
 
-struct G4ComplexPair {
-  double re;
-  double im;
-};
+using CudaComplex = thrust::complex<double>;
 
 struct AdiCoefficientsView {
   const double* c_re;
@@ -73,58 +71,6 @@ struct SourceParticleView {
   const double* theta;
   const int* slice_id;
 };
-
-GENESIS4_CUDA_HOST_DEVICE GENESIS4_CUDA_FORCE_INLINE
-G4ComplexPair g4_make_complex(double re, double im) noexcept
-{
-  return {re, im};
-}
-
-GENESIS4_CUDA_HOST_DEVICE GENESIS4_CUDA_FORCE_INLINE
-G4ComplexPair g4_add(G4ComplexPair a, G4ComplexPair b) noexcept
-{
-  return {a.re + b.re, a.im + b.im};
-}
-
-GENESIS4_CUDA_HOST_DEVICE GENESIS4_CUDA_FORCE_INLINE
-G4ComplexPair g4_sub(G4ComplexPair a, G4ComplexPair b) noexcept
-{
-  return {a.re - b.re, a.im - b.im};
-}
-
-GENESIS4_CUDA_HOST_DEVICE GENESIS4_CUDA_FORCE_INLINE
-G4ComplexPair g4_mul(G4ComplexPair a, G4ComplexPair b) noexcept
-{
-  return {a.re * b.re - a.im * b.im,
-          a.re * b.im + a.im * b.re};
-}
-
-GENESIS4_CUDA_HOST_DEVICE GENESIS4_CUDA_FORCE_INLINE
-G4ComplexPair g4_div(G4ComplexPair a, G4ComplexPair b) noexcept
-{
-  const double den = b.re * b.re + b.im * b.im;
-  return {(a.re * b.re + a.im * b.im) / den,
-          (a.im * b.re - a.re * b.im) / den};
-}
-
-GENESIS4_CUDA_HOST_DEVICE GENESIS4_CUDA_FORCE_INLINE
-G4ComplexPair g4_neg(G4ComplexPair a) noexcept
-{
-  return {-a.re, -a.im};
-}
-
-GENESIS4_CUDA_HOST_DEVICE GENESIS4_CUDA_FORCE_INLINE
-G4ComplexPair g4_scale(G4ComplexPair a, double s) noexcept
-{
-  return {a.re * s, a.im * s};
-}
-
-GENESIS4_CUDA_HOST_DEVICE GENESIS4_CUDA_FORCE_INLINE
-G4ComplexPair g4_mul_i_scale(G4ComplexPair a, double s) noexcept
-{
-  // (i*s) * (a.re + i*a.im) = -s*a.im + i*s*a.re
-  return {-s * a.im, s * a.re};
-}
 
 void adi_compute_slice_scl(int nslice,
                            const int* slice_offsets,
@@ -245,28 +191,31 @@ void adi_build_rhs_y_laplacian(int total_cells,
       const int local = g % plane;
       const int iy = local / ngrid;
 
-      G4ComplexPair lap = g4_make_complex(0.0, 0.0);
-      const G4ComplexPair center = g4_make_complex(field_re[g], field_im[g]);
+      const CudaComplex center(field_re[g], field_im[g]);
+      CudaComplex lap(0.0, 0.0);
 
       if (iy == 0) {
-        lap = g4_sub(g4_make_complex(field_re[g + ngrid], field_im[g + ngrid]),
-                     g4_scale(center, 2.0));
+        lap = CudaComplex(field_re[g + ngrid], field_im[g + ngrid])
+            - center * 2.0;
       } else if (iy == ngrid - 1) {
-        lap = g4_sub(g4_make_complex(field_re[g - ngrid], field_im[g - ngrid]),
-                     g4_scale(center, 2.0));
+        lap = CudaComplex(field_re[g - ngrid], field_im[g - ngrid])
+            - center * 2.0;
       } else {
-        lap = g4_add(g4_make_complex(field_re[g + ngrid], field_im[g + ngrid]),
-                     g4_make_complex(field_re[g - ngrid], field_im[g - ngrid]));
-        lap = g4_sub(lap, g4_scale(center, 2.0));
+        lap = CudaComplex(field_re[g + ngrid], field_im[g + ngrid])
+            + CudaComplex(field_re[g - ngrid], field_im[g - ngrid])
+            - center * 2.0;
       }
 
-      G4ComplexPair rhs = g4_add(center, g4_mul_i_scale(lap, cstep_im));
+      // rhs = center + (i * cstep_im) * lap
+      const CudaComplex i_cstep_lap(-cstep_im * lap.imag(),
+                                   cstep_im * lap.real());
+
+      CudaComplex rhs = center + i_cstep_lap;
       if (source_re != nullptr && source_im != nullptr) {
-        rhs.re += source_re[g];
-        rhs.im += source_im[g];
+        rhs += CudaComplex(source_re[g], source_im[g]);
       }
-      r_re[g] = rhs.re;
-      r_im[g] = rhs.im;
+      r_re[g] = rhs.real();
+      r_im[g] = rhs.imag();
     });
 }
 
@@ -294,29 +243,35 @@ void adi_solve_x_thomas(int nslice,
       const int row = line - s * ngrid;
       const int base = s * plane + row * ngrid;
 
-      G4ComplexPair u = g4_mul(g4_make_complex(r_re[base], r_im[base]),
-                               g4_make_complex(cbet_re[0], cbet_im[0]));
-      field_re[base] = u.re;
-      field_im[base] = u.im;
+      CudaComplex u = CudaComplex(r_re[base], r_im[base])
+                  * CudaComplex(cbet_re[0], cbet_im[0]);
+      field_re[base] = u.real();
+      field_im[base] = u.imag();
 
       for (int k = 1; k < ngrid; ++k) {
         const int idx = base + k;
-        const G4ComplexPair ck = g4_make_complex(c_re[k], c_im[k]);
-        const G4ComplexPair prev = g4_make_complex(field_re[idx - 1], field_im[idx - 1]);
-        const G4ComplexPair tmp = g4_sub(g4_make_complex(r_re[idx], r_im[idx]),
-                                         g4_mul(ck, prev));
-        u = g4_mul(tmp, g4_make_complex(cbet_re[k], cbet_im[k]));
-        field_re[idx] = u.re;
-        field_im[idx] = u.im;
+
+        const CudaComplex ck(c_re[k], c_im[k]);
+        const CudaComplex prev(field_re[idx - 1], field_im[idx - 1]);
+        const CudaComplex rhs(r_re[idx], r_im[idx]);
+
+        u = (rhs - ck * prev) * CudaComplex(cbet_re[k], cbet_im[k]);
+
+        field_re[idx] = u.real();
+        field_im[idx] = u.imag();
       }
 
       for (int k = ngrid - 2; k >= 0; --k) {
         const int idx = base + k;
-        const G4ComplexPair corr = g4_mul(g4_make_complex(cwet_re[k + 1], cwet_im[k + 1]),
-                                          g4_make_complex(field_re[idx + 1], field_im[idx + 1]));
-        u = g4_sub(g4_make_complex(field_re[idx], field_im[idx]), corr);
-        field_re[idx] = u.re;
-        field_im[idx] = u.im;
+
+        const CudaComplex corr =
+            CudaComplex(cwet_re[k + 1], cwet_im[k + 1])
+          * CudaComplex(field_re[idx + 1], field_im[idx + 1]);
+
+        u = CudaComplex(field_re[idx], field_im[idx]) - corr;
+
+        field_re[idx] = u.real();
+        field_im[idx] = u.imag();
       }
     });
 }
@@ -339,28 +294,31 @@ void adi_build_rhs_x_laplacian(int total_cells,
       const int local = g % plane;
       const int ix = local % ngrid;
 
-      G4ComplexPair lap = g4_make_complex(0.0, 0.0);
-      const G4ComplexPair center = g4_make_complex(field_re[g], field_im[g]);
+      const CudaComplex center(field_re[g], field_im[g]);
+      CudaComplex lap(0.0, 0.0);
 
       if (ix == 0) {
-        lap = g4_sub(g4_make_complex(field_re[g + 1], field_im[g + 1]),
-                     g4_scale(center, 2.0));
+        lap = CudaComplex(field_re[g + 1], field_im[g + 1])
+            - center * 2.0;
       } else if (ix == ngrid - 1) {
-        lap = g4_sub(g4_make_complex(field_re[g - 1], field_im[g - 1]),
-                     g4_scale(center, 2.0));
+        lap = CudaComplex(field_re[g - 1], field_im[g - 1])
+            - center * 2.0;
       } else {
-        lap = g4_add(g4_make_complex(field_re[g + 1], field_im[g + 1]),
-                     g4_make_complex(field_re[g - 1], field_im[g - 1]));
-        lap = g4_sub(lap, g4_scale(center, 2.0));
+        lap = CudaComplex(field_re[g + 1], field_im[g + 1])
+            + CudaComplex(field_re[g - 1], field_im[g - 1])
+            - center * 2.0;
       }
 
-      G4ComplexPair rhs = g4_add(center, g4_mul_i_scale(lap, cstep_im));
+      // rhs = center + (i * cstep_im) * lap
+      const CudaComplex i_cstep_lap(-cstep_im * lap.imag(),
+                                   cstep_im * lap.real());
+
+      CudaComplex rhs = center + i_cstep_lap;
       if (source_re != nullptr && source_im != nullptr) {
-        rhs.re += source_re[g];
-        rhs.im += source_im[g];
+        rhs += CudaComplex(source_re[g], source_im[g]);
       }
-      r_re[g] = rhs.re;
-      r_im[g] = rhs.im;
+      r_re[g] = rhs.real();
+      r_im[g] = rhs.imag();
     });
 }
 
@@ -388,29 +346,35 @@ void adi_solve_y_thomas(int nslice,
       const int col = line - s * ngrid;
       const int base = s * plane + col;
 
-      G4ComplexPair u = g4_mul(g4_make_complex(r_re[base], r_im[base]),
-                               g4_make_complex(cbet_re[0], cbet_im[0]));
-      field_re[base] = u.re;
-      field_im[base] = u.im;
+      CudaComplex u = CudaComplex(r_re[base], r_im[base])
+                  * CudaComplex(cbet_re[0], cbet_im[0]);
+      field_re[base] = u.real();
+      field_im[base] = u.imag();
 
       for (int k = 1; k < ngrid; ++k) {
         const int idx = base + k * ngrid;
-        const G4ComplexPair ck = g4_make_complex(c_re[k], c_im[k]);
-        const G4ComplexPair prev = g4_make_complex(field_re[idx - ngrid], field_im[idx - ngrid]);
-        const G4ComplexPair tmp = g4_sub(g4_make_complex(r_re[idx], r_im[idx]),
-                                         g4_mul(ck, prev));
-        u = g4_mul(tmp, g4_make_complex(cbet_re[k], cbet_im[k]));
-        field_re[idx] = u.re;
-        field_im[idx] = u.im;
+
+        const CudaComplex ck(c_re[k], c_im[k]);
+        const CudaComplex prev(field_re[idx - ngrid], field_im[idx - ngrid]);
+        const CudaComplex rhs(r_re[idx], r_im[idx]);
+
+        u = (rhs - ck * prev) * CudaComplex(cbet_re[k], cbet_im[k]);
+
+        field_re[idx] = u.real();
+        field_im[idx] = u.imag();
       }
 
       for (int k = ngrid - 2; k >= 0; --k) {
         const int idx = base + k * ngrid;
-        const G4ComplexPair corr = g4_mul(g4_make_complex(cwet_re[k + 1], cwet_im[k + 1]),
-                                          g4_make_complex(field_re[idx + ngrid], field_im[idx + ngrid]));
-        u = g4_sub(g4_make_complex(field_re[idx], field_im[idx]), corr);
-        field_re[idx] = u.re;
-        field_im[idx] = u.im;
+
+        const CudaComplex corr =
+            CudaComplex(cwet_re[k + 1], cwet_im[k + 1])
+          * CudaComplex(field_re[idx + ngrid], field_im[idx + ngrid]);
+
+        u = CudaComplex(field_re[idx], field_im[idx]) - corr;
+
+        field_re[idx] = u.real();
+        field_im[idx] = u.imag();
       }
     });
 }
@@ -438,44 +402,44 @@ void adi_prepare_pcr_factors(int ngrid,
   std::vector<double> h_b_re(ngrid);
   std::vector<double> h_b_im(ngrid);
 
-  std::vector<G4ComplexPair> a(ngrid);
-  std::vector<G4ComplexPair> b(ngrid);
-  std::vector<G4ComplexPair> c(ngrid);
-  std::vector<G4ComplexPair> na(ngrid);
-  std::vector<G4ComplexPair> nb(ngrid);
-  std::vector<G4ComplexPair> nc(ngrid);
+  std::vector<CudaComplex> a(ngrid);
+  std::vector<CudaComplex> b(ngrid);
+  std::vector<CudaComplex> c(ngrid);
+  std::vector<CudaComplex> na(ngrid);
+  std::vector<CudaComplex> nb(ngrid);
+  std::vector<CudaComplex> nc(ngrid);
 
   for (int i = 0; i < ngrid; ++i) {
-    a[i] = (i == 0) ? g4_make_complex(0.0, 0.0) : g4_make_complex(0.0, -rtmp);
-    b[i] = g4_make_complex(1.0, 2.0 * rtmp);
-    c[i] = (i == ngrid - 1) ? g4_make_complex(0.0, 0.0) : g4_make_complex(0.0, -rtmp);
+    a[i] = (i == 0) ? CudaComplex(0.0, 0.0) : CudaComplex(0.0, -rtmp);
+    b[i] = CudaComplex(1.0, 2.0 * rtmp);
+    c[i] = (i == ngrid - 1) ? CudaComplex(0.0, 0.0) : CudaComplex(0.0, -rtmp);
   }
 
   int stage = 0;
   for (int stride = 1; stride < ngrid; stride <<= 1, ++stage) {
     for (int tid = 0; tid < ngrid; ++tid) {
-      G4ComplexPair alpha = g4_make_complex(0.0, 0.0);
-      G4ComplexPair beta = g4_make_complex(0.0, 0.0);
-      G4ComplexPair a_new = g4_make_complex(0.0, 0.0);
-      G4ComplexPair b_new = b[tid];
-      G4ComplexPair c_new = g4_make_complex(0.0, 0.0);
+      CudaComplex alpha(0.0, 0.0);
+      CudaComplex beta(0.0, 0.0);
+      CudaComplex a_new(0.0, 0.0);
+      CudaComplex b_new = b[tid];
+      CudaComplex c_new(0.0, 0.0);
 
       if (tid >= stride) {
-        alpha = g4_neg(g4_div(a[tid], b[tid - stride]));
-        a_new = g4_mul(alpha, a[tid - stride]);
-        b_new = g4_add(b_new, g4_mul(alpha, c[tid - stride]));
+        alpha = -a[tid] / b[tid - stride];
+        a_new = alpha * a[tid - stride];
+        b_new += alpha * c[tid - stride];
       }
       if (tid + stride < ngrid) {
-        beta = g4_neg(g4_div(c[tid], b[tid + stride]));
-        c_new = g4_mul(beta, c[tid + stride]);
-        b_new = g4_add(b_new, g4_mul(beta, a[tid + stride]));
+        beta = -c[tid] / b[tid + stride];
+        c_new = beta * c[tid + stride];
+        b_new += beta * a[tid + stride];
       }
 
       const int off = stage * ngrid + tid;
-      h_alpha_re[off] = alpha.re;
-      h_alpha_im[off] = alpha.im;
-      h_beta_re[off] = beta.re;
-      h_beta_im[off] = beta.im;
+      h_alpha_re[off] = alpha.real();
+      h_alpha_im[off] = alpha.imag();
+      h_beta_re[off] = beta.real();
+      h_beta_im[off] = beta.imag();
       na[tid] = a_new;
       nb[tid] = b_new;
       nc[tid] = c_new;
@@ -487,8 +451,8 @@ void adi_prepare_pcr_factors(int ngrid,
   }
 
   for (int i = 0; i < ngrid; ++i) {
-    h_b_re[i] = b[i].re;
-    h_b_im[i] = b[i].im;
+    h_b_re[i] = b[i].real();
+    h_b_im[i] = b[i].imag();
   }
 
   alpha_re.copy_from_host(h_alpha_re.data(), h_alpha_re.size());
@@ -506,9 +470,12 @@ __global__ void adi_solve_x_pcr_kernel(int ngrid,
                                        PcrFactorView pcr,
                                        AdiFieldView field)
 {
-  extern __shared__ G4ComplexPair shared[];
-  G4ComplexPair* cur = shared;
-  G4ComplexPair* nxt = cur + blockDim.x;
+  extern __shared__ double shared[];
+
+  double* cur_re = shared;
+  double* cur_im = cur_re + blockDim.x;
+  double* nxt_re = cur_im + blockDim.x;
+  double* nxt_im = nxt_re + blockDim.x;
 
   const int tid = threadIdx.x;
   const int line = blockIdx.x;
@@ -519,7 +486,8 @@ __global__ void adi_solve_x_pcr_kernel(int ngrid,
 
   if (tid < ngrid) {
     const int idx = base + tid;
-    cur[tid] = g4_make_complex(field.r_re[idx], field.r_im[idx]);
+    cur_re[tid] = field.r_re[idx];
+    cur_im[tid] = field.r_im[idx];
   }
   __syncthreads();
 
@@ -527,28 +495,34 @@ __global__ void adi_solve_x_pcr_kernel(int ngrid,
   for (int stage = 0; stage < pcr.num_stages; ++stage, stride <<= 1) {
     if (tid < ngrid) {
       const int off = stage * ngrid + tid;
-      G4ComplexPair d = cur[tid];
+      CudaComplex d(cur_re[tid], cur_im[tid]);
       if (tid >= stride) {
-        d = g4_add(d, g4_mul(g4_make_complex(pcr.alpha_re[off], pcr.alpha_im[off]),
-                             cur[tid - stride]));
+        d += CudaComplex(pcr.alpha_re[off], pcr.alpha_im[off])
+           * CudaComplex(cur_re[tid - stride], cur_im[tid - stride]);
       }
       if (tid + stride < ngrid) {
-        d = g4_add(d, g4_mul(g4_make_complex(pcr.beta_re[off], pcr.beta_im[off]),
-                             cur[tid + stride]));
+        d += CudaComplex(pcr.beta_re[off], pcr.beta_im[off])
+           * CudaComplex(cur_re[tid + stride], cur_im[tid + stride]);
       }
-      nxt[tid] = d;
+      nxt_re[tid] = d.real();
+      nxt_im[tid] = d.imag();
     }
     __syncthreads();
-    G4ComplexPair* tmp = cur;
-    cur = nxt;
-    nxt = tmp;
+    double* tmp_re = cur_re;
+    double* tmp_im = cur_im;
+    cur_re = nxt_re;
+    cur_im = nxt_im;
+    nxt_re = tmp_re;
+    nxt_im = tmp_im;
   }
 
   if (tid < ngrid) {
     const int idx = base + tid;
-    const G4ComplexPair u = g4_div(cur[tid], g4_make_complex(pcr.b_re[tid], pcr.b_im[tid]));
-    field.field_re[idx] = u.re;
-    field.field_im[idx] = u.im;
+    const CudaComplex u =
+        CudaComplex(cur_re[tid], cur_im[tid])
+      / CudaComplex(pcr.b_re[tid], pcr.b_im[tid]);
+    field.field_re[idx] = u.real();
+    field.field_im[idx] = u.imag();
   }
 }
 
@@ -556,9 +530,12 @@ __global__ void adi_solve_y_pcr_kernel(int ngrid,
                                        PcrFactorView pcr,
                                        AdiFieldView field)
 {
-  extern __shared__ G4ComplexPair shared[];
-  G4ComplexPair* cur = shared;
-  G4ComplexPair* nxt = cur + blockDim.x;
+  extern __shared__ double shared[];
+
+  double* cur_re = shared;
+  double* cur_im = cur_re + blockDim.x;
+  double* nxt_re = cur_im + blockDim.x;
+  double* nxt_im = nxt_re + blockDim.x;
 
   const int tid = threadIdx.x;
   const int line = blockIdx.x;
@@ -569,7 +546,8 @@ __global__ void adi_solve_y_pcr_kernel(int ngrid,
 
   if (tid < ngrid) {
     const int idx = base + tid * ngrid;
-    cur[tid] = g4_make_complex(field.r_re[idx], field.r_im[idx]);
+    cur_re[tid] = field.r_re[idx];
+    cur_im[tid] = field.r_im[idx];
   }
   __syncthreads();
 
@@ -577,28 +555,34 @@ __global__ void adi_solve_y_pcr_kernel(int ngrid,
   for (int stage = 0; stage < pcr.num_stages; ++stage, stride <<= 1) {
     if (tid < ngrid) {
       const int off = stage * ngrid + tid;
-      G4ComplexPair d = cur[tid];
+      CudaComplex d(cur_re[tid], cur_im[tid]);
       if (tid >= stride) {
-        d = g4_add(d, g4_mul(g4_make_complex(pcr.alpha_re[off], pcr.alpha_im[off]),
-                             cur[tid - stride]));
+        d += CudaComplex(pcr.alpha_re[off], pcr.alpha_im[off])
+           * CudaComplex(cur_re[tid - stride], cur_im[tid - stride]);
       }
       if (tid + stride < ngrid) {
-        d = g4_add(d, g4_mul(g4_make_complex(pcr.beta_re[off], pcr.beta_im[off]),
-                             cur[tid + stride]));
+        d += CudaComplex(pcr.beta_re[off], pcr.beta_im[off])
+           * CudaComplex(cur_re[tid + stride], cur_im[tid + stride]);
       }
-      nxt[tid] = d;
+      nxt_re[tid] = d.real();
+      nxt_im[tid] = d.imag();
     }
     __syncthreads();
-    G4ComplexPair* tmp = cur;
-    cur = nxt;
-    nxt = tmp;
+    double* tmp_re = cur_re;
+    double* tmp_im = cur_im;
+    cur_re = nxt_re;
+    cur_im = nxt_im;
+    nxt_re = tmp_re;
+    nxt_im = tmp_im;
   }
 
   if (tid < ngrid) {
     const int idx = base + tid * ngrid;
-    const G4ComplexPair u = g4_div(cur[tid], g4_make_complex(pcr.b_re[tid], pcr.b_im[tid]));
-    field.field_re[idx] = u.re;
-    field.field_im[idx] = u.im;
+    const CudaComplex u =
+        CudaComplex(cur_re[tid], cur_im[tid])
+      / CudaComplex(pcr.b_re[tid], pcr.b_im[tid]);
+    field.field_re[idx] = u.real();
+    field.field_im[idx] = u.imag();
   }
 }
 
@@ -618,7 +602,7 @@ bool adi_try_solve_x_pcr(int nlines,
     return false;
   }
   const int block = g4_next_power_of_two(ngrid);
-  const std::size_t shmem = 2 * static_cast<std::size_t>(block) * sizeof(G4ComplexPair);
+  const std::size_t shmem = 4 * static_cast<std::size_t>(block) * sizeof(double);
   adi_solve_x_pcr_kernel<<<nlines, block, shmem, g4_cuda_stream()>>>(ngrid,
                                                                             pcr,
                                                                             field);
@@ -634,7 +618,7 @@ bool adi_try_solve_y_pcr(int nlines,
     return false;
   }
   const int block = g4_next_power_of_two(ngrid);
-  const std::size_t shmem = 2 * static_cast<std::size_t>(block) * sizeof(G4ComplexPair);
+  const std::size_t shmem = 4 * static_cast<std::size_t>(block) * sizeof(double);
   adi_solve_y_pcr_kernel<<<nlines, block, shmem, g4_cuda_stream()>>>(ngrid,
                                                                             pcr,
                                                                             field);
@@ -827,11 +811,11 @@ void FieldSolverADICUDA::init(double delz, double dgrid, double xks, unsigned in
   vector<double> mupp(ngrid);
   vector<double> mmid(ngrid);
   vector<double> mlow(ngrid);
-  vector<complex<double> > c_host(ngrid);
-  vector<complex<double> > cbet_host(ngrid);
-  vector<complex<double> > cwet_host(ngrid);
-  vector<complex<double> > cwrk1(ngrid);
-  vector<complex<double> > cwrk2(ngrid);
+  vector<CudaComplex> c_host(ngrid);
+  vector<CudaComplex> cbet_host(ngrid);
+  vector<CudaComplex> cwet_host(ngrid);
+  vector<CudaComplex> cwrk1(ngrid);
+  vector<CudaComplex> cwrk2(ngrid);
 
   mupp[0] = rtmp;
   mmid[0] = -2 * rtmp;
@@ -846,16 +830,17 @@ void FieldSolverADICUDA::init(double delz, double dgrid, double xks, unsigned in
   mlow[ngrid - 1] = rtmp;
 
   for (unsigned int i = 0; i < ngrid; i++) {
-    cwrk1[i] = complex<double>(0, -mupp[i]);
-    cwrk2[i] = complex<double>(1, -mmid[i]);
-    c_host[i] = complex<double>(0, -mlow[i]);
+    cwrk1[i] = CudaComplex(0.0, -mupp[i]);
+    cwrk2[i] = CudaComplex(1.0, -mmid[i]);
+    c_host[i] = CudaComplex(0.0, -mlow[i]);
   }
 
-  cbet_host[0] = 1. / cwrk2[0];
-  cwet_host[0] = 0.;
+  cbet_host[0] = CudaComplex(1.0, 0.0) / cwrk2[0];
+  cwet_host[0] = CudaComplex(0.0, 0.0);
   for (unsigned int i = 1; i < ngrid; i++) {
     cwet_host[i] = cwrk1[i - 1] * cbet_host[i - 1];
-    cbet_host[i] = 1. / (cwrk2[i] - c_host[i] * cwet_host[i]);
+    cbet_host[i] = CudaComplex(1.0, 0.0) /
+                   (cwrk2[i] - c_host[i] * cwet_host[i]);
   }
 
   std::vector<double> h_c_re(ngrid);
