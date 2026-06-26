@@ -84,7 +84,7 @@ void Field::init(int nsize, int ngrid_in, double dgrid_in, double xlambda0, doub
   solver  = new FieldSolverADI;
 }
 
-void Field::initSolver(bool isFFT,bool filter, double xc, double yc, double sig, bool use_cuda) {
+void Field::initSolver(bool isFFT,bool filter, double xc, double yc, double sig, bool use_cuda, bool low_memory_adisolver) {
     if (hasSolver_) {
         delete solver;
     }
@@ -94,7 +94,7 @@ void Field::initSolver(bool isFFT,bool filter, double xc, double yc, double sig,
             solver = new FieldSolverFFTCUDA;
             solver->initSourceFilter(xc,yc,sig,filter);
         } else {
-            solver = new FieldSolverADICUDA;
+            solver = new FieldSolverADICUDA(low_memory_adisolver);
         }
         hasSolver_=true;
         return;

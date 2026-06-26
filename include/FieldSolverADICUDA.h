@@ -17,6 +17,7 @@ using namespace std;
 
 class FieldSolverADICUDA : public FieldSolver{
  public:
+  explicit FieldSolverADICUDA(bool atomic_source=false);
   ~FieldSolverADICUDA();
 
   void init(double,double,double,unsigned int) override;
@@ -53,6 +54,8 @@ class FieldSolverADICUDA : public FieldSolver{
   // Source current and scale per beam slice.
   CudaDeviceBuffer<double> d_current;
   CudaDeviceBuffer<double> d_slice_scl;
+
+  bool atomic_source_ {false};
 
   int d_alloc_nslice {0};
   int d_alloc_cells_per_slice {0};

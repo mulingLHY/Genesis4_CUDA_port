@@ -29,7 +29,7 @@ class Track: public StringProcessing{
    double xc,yc,sig;
    int output_step,dumpFieldStep,dumpBeamStep,sort_step,bunchharm;
    int rank, size;
-   bool exclharm,fftsolver,doFilter,periodic,use_cuda;
+   bool exclharm,fftsolver,doFilter,periodic,use_cuda,low_memory_adisolver;
 };
 
 #endif

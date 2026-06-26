@@ -106,12 +106,12 @@ void adi_zero_source_grid(int total_cells,
     });
 }
 
-void adi_deposit_source_grid(int total_particles,
-                             SourceParams params,
-                             SourceParticleView particles,
-                             const double* slice_scl,
-                             double* source_re,
-                             double* source_im)
+void adi_deposit_source_atomic(int total_particles,
+                               SourceParams params,
+                               SourceParticleView particles,
+                               const double* slice_scl,
+                               double* target_re,
+                               double* target_im)
 {
   const int plane = params.ngrid * params.ngrid;
 
@@ -159,17 +159,17 @@ void adi_deposit_source_grid(int total_particles,
       const double w01 = wx * (1.0 - wy);
       const double w11 = (1.0 - wx) * (1.0 - wy);
 
-      g4_cuda_atomic_add_double(&source_re[base], cpart_re * w00);
-      g4_cuda_atomic_add_double(&source_im[base], cpart_im * w00);
+      g4_cuda_atomic_add_double(&target_re[base], cpart_re * w00);
+      g4_cuda_atomic_add_double(&target_im[base], cpart_im * w00);
 
-      g4_cuda_atomic_add_double(&source_re[base + 1], cpart_re * w10);
-      g4_cuda_atomic_add_double(&source_im[base + 1], cpart_im * w10);
+      g4_cuda_atomic_add_double(&target_re[base + 1], cpart_re * w10);
+      g4_cuda_atomic_add_double(&target_im[base + 1], cpart_im * w10);
 
-      g4_cuda_atomic_add_double(&source_re[base + params.ngrid], cpart_re * w01);
-      g4_cuda_atomic_add_double(&source_im[base + params.ngrid], cpart_im * w01);
+      g4_cuda_atomic_add_double(&target_re[base + params.ngrid], cpart_re * w01);
+      g4_cuda_atomic_add_double(&target_im[base + params.ngrid], cpart_im * w01);
 
-      g4_cuda_atomic_add_double(&source_re[base + params.ngrid + 1], cpart_re * w11);
-      g4_cuda_atomic_add_double(&source_im[base + params.ngrid + 1], cpart_im * w11);
+      g4_cuda_atomic_add_double(&target_re[base + params.ngrid + 1], cpart_re * w11);
+      g4_cuda_atomic_add_double(&target_im[base + params.ngrid + 1], cpart_im * w11);
     });
 }
 
@@ -628,6 +628,10 @@ bool adi_try_solve_y_pcr(int nlines,
 } // namespace
 
 
+FieldSolverADICUDA::FieldSolverADICUDA(bool atomic_source)
+    : atomic_source_(atomic_source)
+{}
+
 FieldSolverADICUDA::~FieldSolverADICUDA() = default;
 
 
@@ -764,18 +768,20 @@ void FieldSolverADICUDA::advance(double delz, Field *field, Beam *beam, Undulato
                                        bsoa->gamma.data(),
                                        bsoa->theta.data(),
                                        bsoa->slice_id.data()};
+  const bool use_source = do_source && total_particles > 0;
   const double* source_re = nullptr;
   const double* source_im = nullptr;
-  if (do_source && total_particles > 0) {
+
+  if (use_source && !atomic_source_) {
     d_source_re.resize_discard(total_cells);
     d_source_im.resize_discard(total_cells);
     adi_zero_source_grid(total_cells, d_source_re.data(), d_source_im.data());
-    adi_deposit_source_grid(total_particles,
-                            source_params,
-                            source_particles,
-                            d_slice_scl.data(),
-                            d_source_re.data(),
-                            d_source_im.data());
+    adi_deposit_source_atomic(total_particles,
+                              source_params,
+                              source_particles,
+                              d_slice_scl.data(),
+                              d_source_re.data(),
+                              d_source_im.data());
     source_re = d_source_re.data();
     source_im = d_source_im.data();
   }
@@ -784,11 +790,27 @@ void FieldSolverADICUDA::advance(double delz, Field *field, Beam *beam, Undulato
   const double cstep_im = cstep.imag();
 
   adi_build_rhs_y_laplacian(total_cells, ngrid_i, cstep_im, source_re, source_im, adi_field);
+  if (use_source && atomic_source_) {
+    adi_deposit_source_atomic(total_particles,
+                              source_params,
+                              source_particles,
+                              d_slice_scl.data(),
+                              r_re,
+                              r_im);
+  }
   if (!adi_try_solve_x_pcr(nlines, ngrid_i, pcr_factors, adi_field)) {
     adi_solve_x_thomas(nslice, ngrid_i, adi_field, adi_coeff);
   }
 
   adi_build_rhs_x_laplacian(total_cells, ngrid_i, cstep_im, source_re, source_im, adi_field);
+  if (use_source && atomic_source_) {
+    adi_deposit_source_atomic(total_particles,
+                              source_params,
+                              source_particles,
+                              d_slice_scl.data(),
+                              r_re,
+                              r_im);
+  }
   if (!adi_try_solve_y_pcr(nlines, ngrid_i, pcr_factors, adi_field)) {
     adi_solve_y_thomas(nslice, ngrid_i, adi_field, adi_coeff);
   }

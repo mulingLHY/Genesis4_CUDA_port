@@ -17,6 +17,7 @@ Track::Track()
   fftsolver = false;
   periodic = false;
   use_cuda = true;
+  low_memory_adisolver = false;
 }
 
 Track::~Track(){}
@@ -30,6 +31,7 @@ void Track::usage()
   cout << " double slen = " << endl;
   cout << " bool periodic = false" << endl;
   cout << " bool use_cuda = true" << endl;
+  cout << " bool low_memory_adisolver = false" << endl;
   cout << " int output_step = 1" << endl;
   cout << " int field_dump_step = 0" << endl;
   cout << " bool field_dump_at_undexit = false" << endl;
@@ -75,6 +77,7 @@ bool Track::init(int inrank, int insize, map<string,string> *arg, Beam *beam, ve
   doFilter = false;
   periodic = false;
   use_cuda = true;
+  low_memory_adisolver = false;
   xc = 1;
   yc = 1;
   sig = 1;
@@ -93,6 +96,7 @@ bool Track::init(int inrank, int insize, map<string,string> *arg, Beam *beam, ve
   if (arg->find("exclusive_harmonics")!=end) {exclharm = atob(arg->at("exclusive_harmonics")); arg->erase(arg->find("exclusive_harmonics"));}
   if (arg->find("periodic")!=end) {periodic = atob(arg->at("periodic")); arg->erase(arg->find("periodic"));}
   if (arg->find("use_cuda")!=end) {use_cuda = atob(arg->at("use_cuda")); arg->erase(arg->find("use_cuda"));}
+  if (arg->find("low_memory_adisolver")!=end) {low_memory_adisolver = atob(arg->at("low_memory_adisolver")); arg->erase(arg->find("low_memory_adisolver"));}
   if (arg->find("dbg_report_lattice")!=end) {dbg_report_lattice = atob(arg->at("dbg_report_lattice")); arg->erase(arg->find("dbg_report_lattice"));}
   if (arg->find("dbg_suppress_outfile")!=end) {dbg_no_outfile = atob(arg->at("dbg_suppress_outfile")); arg->erase(arg->find("dbg_suppress_outfile"));}
   if (arg->find("xcut")!=end) {xc= atof(arg->at("xcut").c_str()); arg->erase(arg->find("xcut"));}
@@ -124,7 +128,7 @@ bool Track::init(int inrank, int insize, map<string,string> *arg, Beam *beam, ve
 #endif
 #endif
   for (int i=0; i<field->size();i++){
-    field->at(i)->initSolver(fftsolver,doFilter,xc,yc,sig,use_cuda);
+    field->at(i)->initSolver(fftsolver,doFilter,xc,yc,sig,use_cuda,low_memory_adisolver);
   }
 #ifdef GENESIS_USE_CUDA
   beam->setUseCuda(use_cuda);

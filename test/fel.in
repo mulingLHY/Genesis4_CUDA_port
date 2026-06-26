@@ -36,4 +36,5 @@ ey=1.2e-6
 
 &track
 use_cuda=1
+low_memory_adisolver=1
 &end

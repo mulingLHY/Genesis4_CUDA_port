@@ -33,5 +33,15 @@ cmake --build build_cpu -j 4
 - `use_cuda = true`：FieldSolver uses `FieldSolverADICUDA`/`FieldSolverFFTCUDA`, BeamSolver uses `BeamSolverCUDA`, beam transverse/R56 path uses `TrackBeamCUDA`, slippage uses `ControlCUDA`, built-in diagnostic calculations use `DiagnosticCUDA`.
 
 
+### `&track/low_memory_adisolver`
+
+`low_memory_adisolver` controls the source-deposition path used by the CUDA ADI field solver, default is `false`:
+
+- `low_memory_adisolver = false`: `FieldSolverADICUDA` uses the source-grid path. Particle source terms are deposited once into an auxiliary source grid `d_source_re`/`d_source_im`, then reused by the two ADI half-steps.
+
+- `low_memory_adisolver = true`: `FieldSolverADICUDA` uses the direct atomic source path. No auxiliary source grid is allocated. Each ADI half-step scans particles and deposits the source contribution. This reduces GPU memory usage, but may be a little bit slower because particles are scanned and deposition twice.
+
+This option only affects the CUDA ADI field solver when `use_cuda = true` and `fft_fieldsolver = false`. 
+
 ### Known issues
 1. one4one `sort` for `Marker` is not implemented.

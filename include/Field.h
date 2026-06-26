@@ -34,7 +34,7 @@ class Field{
    Field();
    virtual ~Field();
    void initDiagnostics(int);
-   void initSolver(bool,bool,double,double,double,bool=false);
+   void initSolver(bool,bool,double,double,double,bool=false,bool=false);
    void diagnostics(bool);
    void resetSlippage();
 
